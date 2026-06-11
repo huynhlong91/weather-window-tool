@@ -1,6 +1,6 @@
 # Marine Survey Weather Window Tool
 
-Monte Carlo campaign duration analysis web app — Python/Streamlit version of the MATLAB WeatherWindowTool.
+Weather Window duration analysis web app — Python/Streamlit version of the MATLAB WeatherWindowTool.
 
 ---
 
@@ -12,59 +12,6 @@ Monte Carlo campaign duration analysis web app — Python/Streamlit version of t
 ├── requirements.txt    ← Python dependencies
 └── README.md
 ```
-
----
-
-## Deploying to Streamlit Cloud (step by step)
-
-### Step 1 — Create a GitHub repository
-
-1. Go to [github.com](https://github.com) → **New repository**
-2. Name it e.g. `weather-window-tool`
-3. Set to **Private** (recommended for client work)
-4. Click **Create repository**
-
-### Step 2 — Upload the files
-
-Option A — via the GitHub web interface:
-1. Open your new repository
-2. Click **Add file → Upload files**
-3. Drag and drop all four files: `app.py`, `engine.py`, `requirements.txt`, `README.md`
-4. Click **Commit changes**
-
-Option B — via Git (if you have it installed):
-```bash
-git clone https://github.com/YOUR-USERNAME/weather-window-tool.git
-cd weather-window-tool
-# copy your four files here
-git add .
-git commit -m "Initial deployment"
-git push
-```
-
-### Step 3 — Deploy on Streamlit Cloud
-
-1. Go to [share.streamlit.io](https://share.streamlit.io)
-2. Sign in with your GitHub account (you said this is already linked ✅)
-3. Click **New app**
-4. Fill in:
-   - **Repository:** `YOUR-USERNAME/weather-window-tool`
-   - **Branch:** `main`
-   - **Main file path:** `app.py`
-5. Click **Deploy**
-
-Streamlit will install dependencies from `requirements.txt` automatically.
-Deployment takes 1–3 minutes. You will get a public URL like:
-
-```
-https://your-username-weather-window-tool-app-xxxxxx.streamlit.app
-```
-
-Share this URL with EirGrid — no installation, no IT restrictions.
-
-### Step 4 — Updating the app
-
-Any time you push a change to GitHub, Streamlit Cloud redeploys automatically within ~1 minute.
 
 ---
 
