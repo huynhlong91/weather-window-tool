@@ -270,7 +270,7 @@ def run_scenario(merged: pd.DataFrame, params: dict):
     raw = run_monte_carlo(merged, win_table, {
         'totalHours':      float(params['dur']),
         'isInterruptible': params['interruptible'],
-        'numIterations':   50_000,
+        'numIterations':   100_000,
         'startMonths':     start_months,
     })
 
