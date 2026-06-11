@@ -25,7 +25,7 @@ st.set_page_config(
     layout="wide",
 )
 
-COLORS  = ["#0072BD", "#D95319", "#EDB120"]   # matches MATLAB tool
+COLORS  = ["#1565C0", "#C62828", "#2E7D32"]   # strong blue / red / green
 SEASONS = [
     "All-Year", "Summer (Apr-Sep)", "Winter (Oct-Mar)",
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -309,7 +309,7 @@ if "results" in st.session_state:
             x=sorted_res,
             y=exceedance,
             name=col_key,
-            line=dict(color=COLORS[i], width=2.5),
+            line=dict(color=COLORS[i], width=3),
             mode="lines",
             hovertemplate=(
                 "<b>" + col_key + "</b><br>"
@@ -360,15 +360,32 @@ if "results" in st.session_state:
         xaxis_title="Total Campaign Duration (hrs)",
         yaxis_title="Probability of Exceedance (%)",
         yaxis=dict(range=[0, 100]),
-        legend=dict(x=0.99, xanchor="right", y=0.99, yanchor="top"),
+        legend=dict(
+            x=0.99, xanchor="right", y=0.99, yanchor="top",
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="#cccccc", borderwidth=1,
+            font=dict(size=13, color="#111111"),
+        ),
         height=460,
         margin=dict(l=60, r=30, t=30, b=60),
-        plot_bgcolor="white",
+        plot_bgcolor="#F8F9FA",
         paper_bgcolor="white",
         hovermode="x unified",
+        font=dict(color="#111111", size=13),
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#e0e0e0", zeroline=False)
-    fig.update_yaxes(showgrid=True, gridcolor="#e0e0e0")
+    fig.update_xaxes(
+        showgrid=True, gridcolor="#cccccc", gridwidth=1,
+        zeroline=False,
+        linecolor="#333333", linewidth=1.5,
+        tickfont=dict(size=12, color="#111111"),
+        title_font=dict(size=14, color="#111111"),
+    )
+    fig.update_yaxes(
+        showgrid=True, gridcolor="#cccccc", gridwidth=1,
+        linecolor="#333333", linewidth=1.5,
+        tickfont=dict(size=12, color="#111111"),
+        title_font=dict(size=14, color="#111111"),
+    )
 
     chart_col, tbl_col = st.columns([3, 2])
 
