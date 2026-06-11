@@ -50,7 +50,25 @@ st.markdown("""
     div[data-testid="stNumberInput"] label,
     div[data-testid="stSelectbox"] label,
     div[data-testid="stCheckbox"] label { font-size: 0.85em; }
-    div[data-testid="stMetric"] { background: #f7f9fc; border-radius: 6px; padding: 8px; }
+    div[data-testid="stMetric"] {
+        background: #ffffff !important;
+        border-radius: 8px;
+        padding: 10px 12px;
+        border: 1px solid #dddddd;
+    }
+    div[data-testid="stMetric"] label {
+        color: #444444 !important;
+        font-size: 0.82em !important;
+        font-weight: 600 !important;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+        color: #111111 !important;
+        font-size: 1.3em !important;
+        font-weight: 700 !important;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricDelta"] {
+        color: #333333 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -342,8 +360,12 @@ if "results" in st.session_state:
         # Key metric callouts
         with metrics_cols[i]:
             st.markdown(
-                f"<span style='color:{COLORS[i]};font-weight:700'>"
+                f"<span style='color:{COLORS[i]};font-weight:700;font-size:1.05em'>"
                 f"Scenario {i+1}</span>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div style='border-top:4px solid {COLORS[i]};margin-bottom:6px'></div>",
                 unsafe_allow_html=True,
             )
             ma, mb, mc_ = st.columns(3)
