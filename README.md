@@ -6,7 +6,7 @@
 
 ## Overview
 
-The Marine Survey Weather Window Tool is a web-based campaign planning application for offshore and marine survey operations. It estimates the total elapsed calendar time required to complete a defined scope of productive marine work under realistic metocean conditions, using a Monte Carlo simulation applied to long-term hindcast data.
+The Marine Survey Weather Window Tool is a web-based campaign planning application for offshore and marine survey operations. It estimates the total elapsed calendar time required to complete a defined scope of productive marine work under realistic metocean conditions, using a Monte Carlo simulation applied to long-term hindcast SC-DMAPS data.
 
 The tool supports simultaneous analysis of up to three operational scenarios, enabling direct comparison of different vessel specifications, operational limits, or campaign start seasons. Results are presented as exceedance probability curves and a summary statistics table.
 
@@ -18,21 +18,21 @@ The tool requires three hindcast CSV files covering the same time period. All fi
 
 ### Hydrodynamics (20-minute resolution)
 
-|Column  |Description             |Units  |
-|--------|------------------------|-------|
-|DateTime|Date and time of record |—      |
-|CSpd    |Current speed           |m/s    |
-|CDir    |Current direction (from)|degrees|
+|Column  |Description               |Units  |
+|--------|--------------------------|-------|
+|DateTime|Date and time of record   |—      |
+|CSpd    |Current speed             |m/s    |
+|CDir    |Current direction (toward)|degrees|
 
 ### Waves (hourly resolution)
 
-|Column  |Description                           |Units  |
-|--------|--------------------------------------|-------|
-|DateTime|Date and time of record               |—      |
-|Hs      |Significant wave height               |m      |
-|Tp      |Peak wave period                      |s      |
-|Tz      |Zero-crossing wave period *(optional)*|s      |
-|WaveDir |Mean wave direction *(optional)*      |degrees|
+|Column  |Description                            |Units  |
+|--------|---------------------------------------|-------|
+|DateTime|Date and time of record                |—      |
+|Hs      |Significant wave height                |m      |
+|Tp      |Peak wave period                       |s      |
+|Tz      |Zero-crossing wave period *(optional)* |s      |
+|WaveDir |Mean wave direction (from) *(optional)*|degrees|
 
 ### Winds (hourly resolution)
 
@@ -66,8 +66,8 @@ Up to three scenarios can be configured simultaneously in the Scenario Parameter
 |**Total Work (hrs)**         |Total productive work hours required to complete the campaign                                                                                                                           |
 |**Min Window (hrs)**         |Minimum contiguous weather window duration to be counted as operationally useful                                                                                                        |
 |**Interruptible**            |Whether the campaign can be split across multiple weather windows (Yes) or requires a single unbroken window (No)                                                                       |
-|**Start Season / Month**     |Restricts campaign start dates to a season or calendar month. Weather windows are searched forward continuously — a March-start campaign will naturally use April, May, and June windows|
-|**Low % / High %**           |Percentile bounds for the P-Low and P-High statistics (e.g. 10 / 90 for P10 and P90)                                                                                                    |
+|**Start Season / Month**     |Restricts campaign start dates to a season or calendar month. Weather windows are searched forward continuously — a March-start campaign will naturally use following month until finish|
+|**Low % / High %**           |Percentile bounds for the P-Low and P-High statistics represent optimistic and worst-case scenarios (e.g. 10 / 90 for P10 and P90)                                                      |
 |**Limit Wind Dir?**          |Enables a wind direction operability sector                                                                                                                                             |
 |**Wind Sector (Min / Max °)**|Inclusive directional sector for wind. Sectors wrapping through North are supported (set Min > Max, e.g. 330° to 030°)                                                                  |
 |**Limit Wave Dir?**          |Enables a wave direction operability sector                                                                                                                                             |
@@ -75,7 +75,7 @@ Up to three scenarios can be configured simultaneously in the Scenario Parameter
 
 ### Step 3 — Run the Analysis
 
-Click **RUN COMPARISON** to execute the Monte Carlo simulation. Each scenario runs 50,000 iterations and typically completes in a few seconds.
+Click **RUN COMPARISON** to execute the Monte Carlo simulation. Each scenario runs 100,000 iterations and typically completes in a few seconds.
 
 -----
 
@@ -93,13 +93,13 @@ A steep curve indicates low variability; a flat, spread-out curve indicates high
 
 ### Results Table
 
-|Row           |Description                                                             |
-|--------------|------------------------------------------------------------------------|
-|**P-Low**     |Duration at the user-defined low percentile. Shown as hours (days)      |
-|**P50**       |Median campaign duration. Shown as hours (days)                         |
-|**P-High**    |Duration at the user-defined high percentile. Shown as hours (days)     |
-|**Avg Dur**   |Arithmetic mean of all 50,000 simulated durations. Shown as hours (days)|
-|**Downtime %**|`(Avg Duration − Total Work Hours) / Avg Duration × 100%`               |
+|Row           |Description                                                              |
+|--------------|-------------------------------------------------------------------------|
+|**P-Low**     |Duration at the user-defined low percentile. Shown as hours (days)       |
+|**P50**       |Median campaign duration. Shown as hours (days)                          |
+|**P-High**    |Duration at the user-defined high percentile. Shown as hours (days)      |
+|**Avg Dur**   |Arithmetic mean of all 100,000 simulated durations. Shown as hours (days)|
+|**Downtime %**|`(Avg Duration − Total Work Hours) / Avg Duration × 100%`                |
 
 -----
 
@@ -124,7 +124,7 @@ Contiguous sequences of feasible hours are identified as weather windows. Window
 
 ### 3. Monte Carlo Simulation
 
-For each of the 50,000 iterations:
+For each of the 100,000 iterations:
 
 1. A campaign start time is drawn at random from the hindcast. If a season or month is specified, only start times within that period are eligible; the simulation then searches forward through the full window table with no seasonal boundary.
 1. The simulation accumulates productive work hours across available windows:
@@ -132,7 +132,7 @@ For each of the 50,000 iterations:
 - **Non-interruptible:** The simulation searches for a single unbroken window of sufficient duration.
 1. Total elapsed calendar time from start to completion is recorded.
 
-Percentiles are derived from the resulting distribution of 50,000 simulated durations using the nearest-rank method.
+Percentiles are derived from the resulting distribution of 100,000 simulated durations using the nearest-rank method.
 
 -----
 
