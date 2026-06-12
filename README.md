@@ -6,7 +6,7 @@
 
 ## Overview
 
-The Marine Survey Weather Window Tool is a web-based campaign planning application for offshore and marine survey operations. It estimates the total elapsed calendar time required to complete a defined scope of productive marine work under realistic metocean conditions, using a Monte Carlo simulation applied to long-term hindcast SC-DMAPS data.
+The Marine Survey Weather Window Tool is a web-based campaign planning application for offshore and marine survey operations. It estimates the total elapsed calendar time required to complete a defined scope of productive marine work under realistic metocean conditions, using a Monte Carlo simulation applied to long-term hindcast SC-DMAP data.
 
 The tool supports simultaneous analysis of up to three operational scenarios, enabling direct comparison of different vessel specifications, operational limits, or campaign start seasons. Results are presented as exceedance probability curves and a summary statistics table.
 
