@@ -43,7 +43,7 @@ The tool requires three hindcast CSV files covering the same time period. All fi
 |WDir10  |Wind direction (from) at 10m *(optional)*|degrees|
 
 
-> **Note:** The hindcast record should ideally cover a minimum of 10 years to produce statistically robust results. A record of 20–40 years is recommended.
+> **Note:** For statistically robust results, the hindcast record should span at least 10 years, though a 20-to-40-year period is recommended. Please note that the weather windows tool requires a continuous dataset; any gaps in the data will cause it to malfunction.
 
 -----
 
