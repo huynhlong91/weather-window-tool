@@ -74,10 +74,91 @@ st.markdown("""
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# Authentication
+# ══════════════════════════════════════════════════════════════════════════
+
+def check_credentials(username: str, password: str) -> bool:
+    """
+    Validate against Streamlit secrets (never stored in the GitHub repo).
+    Set up in Streamlit Cloud → App Settings → Secrets, or locally in
+    .streamlit/secrets.toml.
+
+    Format:
+        [users]
+        alice = "password_for_alice"
+        bob   = "password_for_bob"
+    """
+    try:
+        users = st.secrets["users"]
+        return username in users and users[username] == password
+    except KeyError:
+        st.error("⚠️  Credentials not configured. Add [users] to Streamlit secrets.")
+        return False
+
+
+def show_login_screen():
+    _, centre, _ = st.columns([1, 1.4, 1])
+    with centre:
+        st.markdown("<div style='height:60px'></div>", unsafe_allow_html=True)
+        st.markdown(
+            """
+            <div style='text-align:center;margin-bottom:8px'>
+                <span style='font-size:3em'>🌊</span>
+            </div>
+            <h2 style='text-align:center;color:#1565C0;margin-bottom:2px'>
+                Marine Survey Weather Window Tool
+            </h2>
+            <p style='text-align:center;color:#666;font-size:0.95em;margin-bottom:28px'>
+                Venterra Group &nbsp;·&nbsp; Restricted Access
+            </p>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.container(border=True):
+            st.markdown("#### Sign in to continue")
+            username = st.text_input("Username", placeholder="Enter your username",
+                                     key="login_user")
+            password = st.text_input("Password", type="password",
+                                     placeholder="Enter your password",
+                                     key="login_pass")
+            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+            if st.button("Sign in", type="primary", use_container_width=True):
+                if username and password:
+                    if check_credentials(username, password):
+                        st.session_state["authenticated"] = True
+                        st.session_state["current_user"] = username
+                        st.rerun()
+                    else:
+                        st.error("Incorrect username or password. Please try again.")
+                else:
+                    st.warning("Please enter both username and password.")
+        st.markdown(
+            "<p style='text-align:center;color:#aaa;font-size:0.8em;margin-top:18px'>"
+            "Access is restricted to authorised users only.<br>"
+            "Contact Venterra Group to request access.</p>",
+            unsafe_allow_html=True,
+        )
+
+
+if not st.session_state.get("authenticated", False):
+    show_login_screen()
+    st.stop()
+
+# ══════════════════════════════════════════════════════════════════════════
 # SECTION 1 — Data Upload
 # ══════════════════════════════════════════════════════════════════════════
-st.title("🌊 Marine Survey Weather Window Tool")
-st.caption("Monte Carlo campaign duration analysis — up to 3 concurrent scenarios")
+title_col, signout_col = st.columns([8, 1])
+with title_col:
+    st.title("🌊 Marine Survey Weather Window Tool")
+    st.caption("Monte Carlo campaign duration analysis — up to 3 concurrent scenarios")
+with signout_col:
+    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+    user = st.session_state.get("current_user", "")
+    st.caption(f"👤 {user}")
+    if st.button("Sign out", use_container_width=True):
+        st.session_state["authenticated"] = False
+        st.session_state["current_user"] = ""
+        st.rerun()
 
 tab_analysis, tab_instructions = st.tabs(["📊  Analysis", "📖  Instructions & Methodology"])
 
@@ -253,7 +334,7 @@ with tab_analysis:
     # SECTION 3 — Run
     # ══════════════════════════════════════════════════════════════════════════
     run_clicked = st.button(
-        "▶  RUN COMPARISON  (100,000 iterations per scenario)",
+        "▶  RUN COMPARISON  (50,000 iterations per scenario)",
         type="primary",
         use_container_width=True,
         disabled=(merged is None),
@@ -289,7 +370,7 @@ with tab_analysis:
         for i, p in enumerate(all_params):
             status_box.info(
                 f"⏳  Running Scenario {i + 1} of 3  "
-                f"(100,000 Monte Carlo iterations)…"
+                f"(50,000 Monte Carlo iterations)…"
             )
             results, msg = run_scenario(merged, p)
             scenario_results.append((results, p, msg))
@@ -443,6 +524,6 @@ with tab_analysis:
             "**Methodology:** Operability windows identified from the full hindcast record. "
             "Season/Month selection restricts only the Monte Carlo campaign start dates — "
             "windows are searched forward continuously from each start regardless of month boundary. "
-            "100,000 iterations per scenario. "
+            "50,000 iterations per scenario. "
             "P-Low / P-High are nearest-rank percentiles of the simulated duration distribution."
         )
