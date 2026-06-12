@@ -334,7 +334,7 @@ with tab_analysis:
     # SECTION 3 — Run
     # ══════════════════════════════════════════════════════════════════════════
     run_clicked = st.button(
-        "▶  RUN COMPARISON  (50,000 iterations per scenario)",
+        "▶  RUN COMPARISON  (100,000 iterations per scenario)",
         type="primary",
         use_container_width=True,
         disabled=(merged is None),
@@ -370,7 +370,7 @@ with tab_analysis:
         for i, p in enumerate(all_params):
             status_box.info(
                 f"⏳  Running Scenario {i + 1} of 3  "
-                f"(50,000 Monte Carlo iterations)…"
+                f"(100,000 Monte Carlo iterations)…"
             )
             results, msg = run_scenario(merged, p)
             scenario_results.append((results, p, msg))
@@ -524,6 +524,6 @@ with tab_analysis:
             "**Methodology:** Operability windows identified from the full hindcast record. "
             "Season/Month selection restricts only the Monte Carlo campaign start dates — "
             "windows are searched forward continuously from each start regardless of month boundary. "
-            "50,000 iterations per scenario. "
+            "100,000 iterations per scenario. "
             "P-Low / P-High are nearest-rank percentiles of the simulated duration distribution."
         )
