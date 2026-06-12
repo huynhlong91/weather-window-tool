@@ -135,7 +135,7 @@ def show_login_screen():
         st.markdown(
             "<p style='text-align:center;color:#aaa;font-size:0.8em;margin-top:18px'>"
             "Access is restricted to authorised users only.<br>"
-            "Contact Venterra Group (long.huynh@venterra-group.com) to request access.</p>",
+            "Contact long.huynh@venterra-group.com to request access.</p>",
             unsafe_allow_html=True,
         )
 
