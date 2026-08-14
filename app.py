@@ -260,11 +260,11 @@ with tab_analysis:
         help_txt="Peak wave period operability limit")
 
     wind_vals  = matrix_row("Wind Limit (m/s)",
-        lambda c, i: _num(c, i, "wind",  15.0,  0.0, 60.0,  1.0))
+        lambda c, i: _num(c, i, "wind",  15.0,  0.0, 60.0,  1.0),
         help_txt="Wind speed operability limit at deck level or 10m ASL")
 
     curr_vals  = matrix_row("Current Limit (m/s)",
-        lambda c, i: _num(c, i, "curr",   1.0,  0.0, 10.0,  0.1))
+        lambda c, i: _num(c, i, "curr",   1.0,  0.0, 10.0,  0.1),
         help_txt="Current speed operability limit")
 
     dur_vals   = matrix_row("Total Work (hrs)",
