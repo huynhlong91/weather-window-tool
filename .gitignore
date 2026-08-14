@@ -1,0 +1,12 @@
+# Streamlit secrets — never commit real credentials
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
