@@ -9,11 +9,15 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
+from datetime import datetime
+
 from engine import (
     load_and_merge,
     run_scenario,
     calc_percentile,
     fmt_hrs_days,
+    N_ITERATIONS,
+    MONTHS,
 )
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -135,7 +139,7 @@ def show_login_screen():
         st.markdown(
             "<p style='text-align:center;color:#aaa;font-size:0.8em;margin-top:18px'>"
             "Access is restricted to authorised users only.<br>"
-            "Contact long.huynh@venterra-group.com to request access.</p>",
+            "Contact Venterra Group to request access.</p>",
             unsafe_allow_html=True,
         )
 
@@ -257,21 +261,47 @@ with tab_analysis:
 
     wind_vals  = matrix_row("Wind Limit (m/s)",
         lambda c, i: _num(c, i, "wind",  15.0,  0.0, 60.0,  1.0))
+        help_txt="Wind speed operability limit at deck level or 10m ASL")
 
-    curr_vals  = matrix_row("Current (m/s)",
+    curr_vals  = matrix_row("Current Limit (m/s)",
         lambda c, i: _num(c, i, "curr",   1.0,  0.0, 10.0,  0.1))
+        help_txt="Current speed operability limit")
 
     dur_vals   = matrix_row("Total Work (hrs)",
         lambda c, i: _num(c, i, "dur",   72.0,  1.0, 8760.0, 1.0),
         help_txt="Total productive work hours required for the campaign")
 
-    minwin_vals = matrix_row("Min Window (hrs)",
-        lambda c, i: _num(c, i, "minwin", 6.0,  1.0, 720.0,  1.0),
-        help_txt="Minimum contiguous window duration to be counted")
-
     inter_vals  = matrix_row("Interruptible",
         lambda c, i: _sel(c, i, "inter", ["Yes", "No"]),
         help_txt="Can the campaign be split across multiple weather windows?")
+
+    # Min Window — disabled in non-interruptible mode.
+    #
+    # When work cannot be split, the campaign needs ONE unbroken window of at
+    # least Total Work hours, so Total Work IS the binding minimum: any smaller
+    # Min Window is redundant and any larger one would wrongly discard usable
+    # windows. Rather than leave the field sitting there silently ignored, it is
+    # disabled and mirrors Total Work so the logic is visible.
+    mw_cols = st.columns([1.6, 1, 1, 1])
+    mw_cols[0].markdown("<div class='row-label'>Min Window (hrs)</div>",
+                        unsafe_allow_html=True,
+                        help="Minimum contiguous window duration to be counted "
+                             "as operationally useful. Not applicable when the "
+                             "campaign is non-interruptible.")
+    minwin_vals = []
+    for i in range(3):
+        if inter_vals[i] == "No":
+            mw_cols[i + 1].number_input(
+                " ", value=float(dur_vals[i]), key=f"minwin_locked_{i}",
+                disabled=True, label_visibility="collapsed",
+                help="Locked to Total Work: a non-interruptible campaign needs "
+                     "one unbroken window of at least this length.")
+            minwin_vals.append(float(dur_vals[i]))
+        else:
+            minwin_vals.append(
+                mw_cols[i + 1].number_input(
+                    " ", value=6.0, min_value=1.0, max_value=720.0, step=1.0,
+                    key=f"minwin_{i}", label_visibility="collapsed"))
 
     season_vals = matrix_row("Start Season / Month",
         lambda c, i: _sel(c, i, "season", SEASONS),
@@ -334,13 +364,32 @@ with tab_analysis:
     # SECTION 3 — Run
     # ══════════════════════════════════════════════════════════════════════════
     run_clicked = st.button(
-        "▶  RUN COMPARISON  (100,000 iterations per scenario)",
+        f"▶  RUN COMPARISON  ({N_ITERATIONS:,} iterations per scenario)",
         type="primary",
         use_container_width=True,
         disabled=(merged is None),
     )
 
+    # Validate Min Window against Total Work (interruptible scenarios only —
+    # non-interruptible ones are locked in sync above and cannot be wrong).
+    bad = [
+        f"Scenario {i+1}: Min Window ({minwin_vals[i]:g} hrs) exceeds "
+        f"Total Work ({dur_vals[i]:g} hrs)"
+        for i in range(3)
+        if inter_vals[i] == "Yes" and minwin_vals[i] > dur_vals[i]
+    ]
+    if bad:
+        st.warning(
+            "**Check scenario settings — Min Window is larger than Total Work in:**\n\n"
+            + "\n".join(f"- {b}" for b in bad)
+            + "\n\nWindows long enough to complete the campaign will be discarded "
+              "by the Min Window filter, which may give unrealistically long durations."
+        )
+
     if run_clicked and merged is not None:
+
+        # Clear previous results immediately so it is obvious a new run started
+        st.session_state.pop("results", None)
 
         all_params = [
             {
@@ -365,18 +414,22 @@ with tab_analysis:
         ]
 
         status_box = st.empty()
+        prog       = st.progress(0.0)
         scenario_results = []
 
         for i, p in enumerate(all_params):
             status_box.info(
                 f"⏳  Running Scenario {i + 1} of 3  "
-                f"(100,000 Monte Carlo iterations)…"
+                f"({N_ITERATIONS:,} Monte Carlo iterations)…"
             )
-            results, msg = run_scenario(merged, p)
-            scenario_results.append((results, p, msg))
+            results, monthly_oper, msg = run_scenario(merged, p)
+            scenario_results.append((results, monthly_oper, p, msg))
+            prog.progress((i + 1) / 3.0)
 
         st.session_state["results"] = scenario_results
-        status_box.success("✅  Analysis complete.")
+        prog.empty()
+        status_box.success(
+            f"✅  Analysis complete at {datetime.now().strftime('%H:%M:%S')}.")
 
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -400,9 +453,11 @@ with tab_analysis:
         }
 
         metrics_cols = st.columns(3)
+        oper_rows = []
 
-        for i, (results, p, msg) in enumerate(res_list):
+        for i, (results, monthly_oper, p, msg) in enumerate(res_list):
             col_key = f"Scenario {i + 1}"
+            oper_rows.append(monthly_oper)
 
             if results is None or len(results) == 0:
                 table_data[col_key] = ["—"] * 5
@@ -502,7 +557,64 @@ with tab_analysis:
         chart_col, tbl_col = st.columns([3, 2])
 
         with chart_col:
-            st.plotly_chart(fig, use_container_width=True)
+            tab_curve, tab_matrix = st.tabs(
+                ["📈  Exceedance Curve", "🗓  Monthly Operability"])
+
+            with tab_curve:
+                st.plotly_chart(fig, use_container_width=True)
+
+            with tab_matrix:
+                oper_arr = np.array(oper_rows, dtype=float)   # 3 x 12
+
+                # Auto-scale colour limits across ALL scenarios, so the full
+                # colour range is used while scenarios stay comparable on a
+                # single shared scale.
+                if np.all(np.isnan(oper_arr)):
+                    c_min, c_max = 0.0, 100.0
+                else:
+                    c_min = float(np.nanmin(oper_arr))
+                    c_max = float(np.nanmax(oper_arr))
+                    if c_max <= c_min:
+                        c_min, c_max = max(0.0, c_min - 1), min(100.0, c_max + 1)
+
+                heat = go.Figure(go.Heatmap(
+                    z=oper_arr,
+                    x=MONTHS,
+                    y=["Scenario 1", "Scenario 2", "Scenario 3"],
+                    zmin=c_min, zmax=c_max,
+                    colorscale="RdYlGn",
+                    xgap=2, ygap=2,
+                    colorbar=dict(
+                        title=dict(text="Operability (%)", side="right"),
+                        thickness=14, len=0.85,
+                    ),
+                    text=[[("" if np.isnan(v) else f"{v:.0f}") for v in row]
+                          for row in oper_arr],
+                    texttemplate="%{text}",
+                    textfont=dict(size=12),
+                    hovertemplate="<b>%{y}</b><br>%{x}: %{z:.1f}%<extra></extra>",
+                ))
+                heat.update_layout(
+                    title=dict(
+                        text="Monthly Operability — % of hours within usable weather windows"
+                             "<br><span style='font-size:11px;color:#666'><i>Hours meeting all "
+                             "limits AND inside a window ≥ Min Window duration</i></span>",
+                        font=dict(size=14, color="#111111"), x=0.0, xanchor="left",
+                    ),
+                    height=430,
+                    margin=dict(l=90, r=30, t=75, b=40),
+                    paper_bgcolor="white", plot_bgcolor="white",
+                    font=dict(color="#111111", size=12),
+                    xaxis=dict(side="top", tickfont=dict(size=12, color="#111111")),
+                    yaxis=dict(autorange="reversed",
+                               tickfont=dict(size=12, color="#111111")),
+                )
+                st.plotly_chart(heat, use_container_width=True)
+                st.caption(
+                    "Counts only hours inside windows that satisfy the Min Window "
+                    "setting, so isolated feasible hours in unusably short gaps are "
+                    "excluded. Aggregated across every year in the hindcast."
+                )
 
         with tbl_col:
             st.markdown("**Campaign Duration Statistics**")
@@ -524,6 +636,6 @@ with tab_analysis:
             "**Methodology:** Operability windows identified from the full hindcast record. "
             "Season/Month selection restricts only the Monte Carlo campaign start dates — "
             "windows are searched forward continuously from each start regardless of month boundary. "
-            "100,000 iterations per scenario. "
+            f"{N_ITERATIONS:,} iterations per scenario. "
             "P-Low / P-High are nearest-rank percentiles of the simulated duration distribution."
         )
