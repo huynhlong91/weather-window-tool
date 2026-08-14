@@ -596,9 +596,7 @@ with tab_analysis:
                 ))
                 heat.update_layout(
                     title=dict(
-                        text="Monthly Operability — % of hours within usable weather windows"
-                             "<br><span style='font-size:11px;color:#666'><i>Hours meeting all "
-                             "limits AND inside a window ≥ Min Window duration</i></span>",
+                        text="Monthly Operability — % of hours within usable weather windows",
                         font=dict(size=14, color="#111111"), x=0.0, xanchor="left",
                     ),
                     height=430,
