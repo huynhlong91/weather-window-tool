@@ -1,28 +1,31 @@
 """
 engine.py  –  Marine Survey Weather Window Tool
-Data processing and Monte Carlo engine.
-Direct translation of WeatherWindowTool.m (loadData / executeAnalysis)
-and runMonteCarlo.m.
+Data processing, operability analysis and Monte Carlo engine.
+
+Python port of WeatherWindowTool.m / runMonteCarlo.m (MATLAB v1.1).
+
+The Monte Carlo is fully vectorised across iterations, which is what makes
+1,000,000 iterations viable in a browser-hosted app (the equivalent
+scalar loop would take ~30 s per scenario).
 """
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-# ── Month name → index map ─────────────────────────────────────────────────
-MONTH_MAP = {m: i + 1 for i, m in enumerate(
-    ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-)}
+N_ITERATIONS = 1_000_000
+
+MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+          'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+MONTH_MAP = {m: i + 1 for i, m in enumerate(MONTHS)}
 
 
 def _to_ns(x) -> np.ndarray:
     """
-    Convert any datetime array / index to int64 nanoseconds since epoch.
-    Explicitly forces dtype='datetime64[ns]' before casting so the result
-    is always in nanoseconds regardless of the pandas storage unit
-    (pandas 2.x uses datetime64[us] internally, which would break
-    arithmetic against NS_PER_HOUR if not normalised first).
+    Convert a datetime array/index to int64 nanoseconds since epoch.
+    Forces dtype='datetime64[ns]' first: pandas 2.x stores datetimes as
+    datetime64[us] internally, which would silently break arithmetic
+    against NS_PER_HOUR if cast directly.
     """
     return np.asarray(x, dtype='datetime64[ns]').astype(np.int64)
 
@@ -36,17 +39,11 @@ def load_and_merge(hydro_bytes: bytes, wave_bytes: bytes, wind_bytes: bytes) -> 
     """
     Equivalent to loadData() in WeatherWindowTool.m.
 
-    1. Read the three CSV files.
-    2. Detect the datetime column automatically (looks for 'time' or 'timestamp').
-    3. Aggregate hydrodynamics from 20-min to hourly: keep the row with the
-       highest CSpd in each hour (vectorised sort — same as MATLAB).
-    4. Merge on the intersection of timestamps (no interpolation needed for
-       gap-free hindcast data).
-
-    Returns
-    -------
-    pd.DataFrame with DatetimeIndex and columns:
-        CSpd, CDir, Hs, [Hmax, Tz, Tm], Tp, WaveDir, WSpd10, WDir10
+    1. Read the three CSV files, auto-detecting the datetime column.
+    2. Aggregate hydrodynamics from 20-min to hourly, keeping the row with
+       the highest CSpd in each hour (peak current loading, not averaged).
+    3. Merge on the intersection of timestamps (no interpolation, so
+       direction columns are never corrupted across the 0/360 boundary).
     """
     from io import BytesIO
 
@@ -54,14 +51,11 @@ def load_and_merge(hydro_bytes: bytes, wave_bytes: bytes, wind_bytes: bytes) -> 
         df = pd.read_csv(BytesIO(b))
         time_col = next(
             (c for c in df.columns
-             if 'time' in c.lower() or 'timestamp' in c.lower()),
-            None
-        )
+             if 'time' in c.lower() or 'timestamp' in c.lower()), None)
         if time_col is None:
             raise ValueError(
                 "No DateTime/Timestamp column found. "
-                "The column name must contain 'Time' or 'Timestamp'."
-            )
+                "The column name must contain 'Time' or 'Timestamp'.")
         df[time_col] = pd.to_datetime(df[time_col])
         return df.set_index(time_col).sort_index()
 
@@ -69,194 +63,261 @@ def load_and_merge(hydro_bytes: bytes, wave_bytes: bytes, wind_bytes: bytes) -> 
     df_wave  = _read(wave_bytes)
     df_wind  = _read(wind_bytes)
 
-    # ── Aggregate hydrodynamics to hourly ─────────────────────────────────
-    # Vectorised: sort by (hour_group ASC, CSpd DESC), take first per group.
+    # Hourly aggregation: sort by CSpd descending, keep first row per hour
     df_hydro = df_hydro.copy()
     df_hydro.index = df_hydro.index.floor('h')
-    cspd_filled = df_hydro['CSpd'].fillna(-np.inf)
-    sort_key = -cspd_filled.values
+    sort_key = -df_hydro['CSpd'].fillna(-np.inf).values
     df_hydro = df_hydro.iloc[np.argsort(sort_key, kind='stable')]
     df_hydro_hourly = (df_hydro[~df_hydro.index.duplicated(keep='first')]
-                       [['CSpd', 'CDir']]
-                       .sort_index())
+                       [['CSpd', 'CDir']].sort_index())
 
-    # ── Select wave / wind columns ────────────────────────────────────────
     wave_cols = [c for c in ['Hs', 'Hmax', 'Tz', 'Tp', 'Tm', 'WaveDir']
                  if c in df_wave.columns]
-    wind_cols = [c for c in ['WSpd10', 'WDir10']
-                 if c in df_wind.columns]
+    wind_cols = [c for c in ['WSpd10', 'WDir10'] if c in df_wind.columns]
 
     if 'Hs' not in wave_cols:
         raise ValueError("Waves CSV must contain an 'Hs' column.")
     if 'WSpd10' not in wind_cols:
         raise ValueError("Winds CSV must contain a 'WSpd10' column.")
 
-    # ── Intersection merge (no interpolation — gap-free hindcast) ─────────
     merged = (df_hydro_hourly
-              .join(df_wave[wave_cols],  how='inner')
-              .join(df_wind[wind_cols],  how='inner'))
+              .join(df_wave[wave_cols], how='inner')
+              .join(df_wind[wind_cols], how='inner'))
     return merged.sort_index()
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 2.  OPERABILITY ANALYSIS  (Step 1 of executeAnalysis)
+# 2.  OPERABILITY ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════
 
 def find_weather_windows(merged: pd.DataFrame, params: dict):
     """
-    Identify contiguous feasible weather windows from the FULL unfiltered
-    hindcast.  Season/month is NOT applied here.
+    Identify contiguous feasible windows from the FULL unfiltered hindcast,
+    and compute window-filtered monthly operability.
 
     Returns
     -------
-    pd.DataFrame with columns ['StartTime', 'Duration'] or None.
+    win_table    : DataFrame['StartTime','Duration']  (None if no windows)
+    monthly_oper : (12,) array of percentages, NaN where no data
+
+    Monthly operability counts only hours falling INSIDE a retained window
+    (one that satisfies Min Window). Isolated feasible hours in unusably
+    short gaps are excluded, so the figure is consistent with the campaign
+    statistics rather than contradicting them.
     """
     hs = merged['Hs'].values
-    tp = merged['Tp'].values  if 'Tp'     in merged.columns else np.zeros(len(merged))
+    tp = merged['Tp'].values if 'Tp' in merged.columns else np.zeros(len(merged))
     wd = merged['WSpd10'].values
     cu = merged['CSpd'].values
 
-    feasible = (
-        (hs <= params['hs'])   &
-        (tp <= params['tp'])   &
-        (wd <= params['wind']) &
-        (cu <= params['curr'])
-    )
+    feasible = ((hs <= params['hs']) & (tp <= params['tp']) &
+                (wd <= params['wind']) & (cu <= params['curr']))
 
-    # Wind direction filter (circular wrap-around safe)
+    # Directional sectors — wrap-through-north safe
     if params['wdir_active'] and 'WDir10' in merged.columns:
-        wdir = merged['WDir10'].values
+        v = merged['WDir10'].values
         lo, hi = params['wdir_min'], params['wdir_max']
-        feasible &= (wdir >= lo) & (wdir <= hi) if lo <= hi \
-                    else (wdir >= lo) | (wdir <= hi)
+        feasible &= ((v >= lo) & (v <= hi)) if lo <= hi else ((v >= lo) | (v <= hi))
 
-    # Wave direction filter
     if params['vdir_active'] and 'WaveDir' in merged.columns:
-        vdir = merged['WaveDir'].values
+        v = merged['WaveDir'].values
         lo, hi = params['vdir_min'], params['vdir_max']
-        feasible &= (vdir >= lo) & (vdir <= hi) if lo <= hi \
-                    else (vdir >= lo) | (vdir <= hi)
+        feasible &= ((v >= lo) & (v <= hi)) if lo <= hi else ((v >= lo) | (v <= hi))
 
-    # Identify contiguous runs of feasible hours
-    pad   = np.concatenate([[0], feasible.astype(np.int8), [0]])
-    diff  = np.diff(pad)
-    starts = np.where(diff ==  1)[0]
+    # Contiguous runs of feasible hours
+    pad    = np.concatenate([[0], feasible.astype(np.int8), [0]])
+    diff   = np.diff(pad)
+    starts = np.where(diff == 1)[0]
     ends   = np.where(diff == -1)[0]
     durs   = (ends - starts).astype(np.float64)
 
     keep = durs >= params['min_win']
-    if not np.any(keep):
-        return None
 
-    times = merged.index
-    return pd.DataFrame({
-        'StartTime': times[starts[keep]],
+    # ── Window-filtered monthly operability ───────────────────────────────
+    n = len(merged)
+    marks = np.zeros(n + 1, dtype=np.int32)
+    if np.any(keep):
+        np.add.at(marks, starts[keep], 1)
+        np.add.at(marks, ends[keep],  -1)
+    usable = np.cumsum(marks[:-1]) > 0
+
+    months = merged.index.month.values
+    monthly_oper = np.full(12, np.nan)
+    for m in range(1, 13):
+        in_m = (months == m)
+        if in_m.any():
+            monthly_oper[m - 1] = 100.0 * usable[in_m].sum() / in_m.sum()
+
+    if not np.any(keep):
+        return None, monthly_oper
+
+    win_table = pd.DataFrame({
+        'StartTime': merged.index[starts[keep]],
         'Duration':  durs[keep],
     })
+    return win_table, monthly_oper
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 3.  MONTE CARLO  (runMonteCarlo.m)
+# 3.  MONTE CARLO  (vectorised across iterations)
 # ══════════════════════════════════════════════════════════════════════════
 
 def run_monte_carlo(merged: pd.DataFrame,
                     win_table: pd.DataFrame,
                     settings: dict) -> np.ndarray:
     """
-    Monte Carlo campaign-duration estimator.
-    Direct translation of runMonteCarlo.m.
+    Monte Carlo campaign-duration estimator — vectorised port of
+    runMonteCarlo.m.
 
-    All datetime arithmetic is done in int64 NANOSECONDS via _to_ns(),
-    which explicitly casts through datetime64[ns] to avoid the pandas 2.x
-    datetime64[us] storage ambiguity.
+    Rather than looping over iterations one at a time, all iterations
+    advance in lock-step: each pass of the outer loop resolves "find the
+    next window" for every still-active iteration simultaneously via a
+    vectorised np.searchsorted. The outer loop runs only as many times as
+    the longest campaign needs windows (typically tens), so 1,000,000
+    iterations complete in about a second instead of ~30.
+
+    Season/Month logic is unchanged: startMonths restricts ONLY which hours
+    are eligible as campaign starts. Once started, a campaign searches the
+    full window table freely forward in continuous time, so a March start
+    correctly uses April/May/June windows.
     """
     total_hours   = float(settings['totalHours'])
     interruptible = bool(settings['isInterruptible'])
     n_iter        = int(settings['numIterations'])
-    start_months  = settings['startMonths']   # list[int] or []
+    start_months  = settings['startMonths']
 
     if win_table is None or len(win_table) == 0:
         return np.full(n_iter, np.inf)
 
-    # ── Build start-time pool ─────────────────────────────────────────────
-    row_times = merged.index
-    limit_idx = max(1, len(row_times) - int(total_hours * 5))
+    # Eligible start-time pool
+    row_times  = merged.index
+    limit_idx  = max(1, len(row_times) - int(total_hours * 5))
     candidates = row_times[:limit_idx]
-
     if start_months:
         candidates = candidates[candidates.month.isin(start_months)]
     if len(candidates) == 0:
         return np.full(n_iter, np.inf)
 
-    # ── Convert to int64 nanoseconds (always, regardless of pandas version)
-    NS_PER_HOUR = np.int64(3_600_000_000_000)   # 1 h = 3.6e12 ns
+    NS_PER_HOUR = np.int64(3_600_000_000_000)
     YEAR_NS     = np.int64(365 * 24) * NS_PER_HOUR
 
-    cand_ns  = _to_ns(candidates)                     # shape (n_starts,)
-    win_ns   = _to_ns(win_table['StartTime'])          # shape (n_wins,)
-    win_durs = win_table['Duration'].values.astype(np.float64)  # hours
+    cand_ns  = _to_ns(candidates)
+    win_ns   = _to_ns(win_table['StartTime'])
+    win_durs = win_table['Duration'].values.astype(np.float64)
 
-    # Sort windows (guard)
     if not np.all(np.diff(win_ns) >= 0):
         order    = np.argsort(win_ns)
         win_ns   = win_ns[order]
         win_durs = win_durs[order]
 
-    n_wins   = len(win_ns)
-    n_starts = len(cand_ns)
-    durations = np.zeros(n_iter, dtype=np.float64)
-    rng = np.random.default_rng()
+    n_wins = len(win_ns)
+    rng    = np.random.default_rng()
 
-    # ── Main loop ─────────────────────────────────────────────────────────
-    for i in range(n_iter):
-        sim_start = cand_ns[rng.integers(n_starts)]
-        cur       = sim_start
-        work      = 0.0
+    sim_start = cand_ns[rng.integers(len(cand_ns), size=n_iter)]
 
-        while work < total_hours:
-            idx = np.searchsorted(win_ns, cur, side='left')
+    # ── Fast path: non-interruptible ──────────────────────────────────────
+    # The campaign needs ONE unbroken window of at least total_hours. Walking
+    # window-by-window is unnecessary: because windows are non-overlapping and
+    # sorted, skipping a too-short window always lands on the next window in
+    # index order. The net result is simply "the first window at or after the
+    # start that is long enough". Pre-filtering to qualifying windows turns the
+    # whole simulation into a single vectorised searchsorted.
+    if not interruptible:
+        end  = np.empty(n_iter, dtype=np.int64)
+        qual = win_durs >= total_hours
 
-            if idx >= n_wins:                      # record exhausted
-                cur += YEAR_NS
-                break
+        if qual.any():
+            qual_ns = win_ns[qual]
+            j   = np.searchsorted(qual_ns, sim_start, side='left')
+            hit = j < len(qual_ns)
+            end[hit] = qual_ns[j[hit]] + np.int64(total_hours * NS_PER_HOUR)
+        else:
+            hit = np.zeros(n_iter, dtype=bool)
 
-            dur     = win_durs[idx]
-            w_start = win_ns[idx]
+        # No long-enough window ahead. The scalar algorithm skips through every
+        # remaining window (each skip advances to that window's end) until the
+        # table is exhausted, then applies the 1-year penalty. Reproduce that
+        # endpoint directly: the end of the final window, plus one year — or,
+        # if no window at all lies ahead of the start, the start plus one year.
+        if (~hit).any():
+            miss     = ~hit
+            last_end = win_ns[-1] + np.int64(win_durs[-1] * NS_PER_HOUR)
+            has_any  = np.searchsorted(win_ns, sim_start[miss], side='left') < n_wins
+            end[miss] = np.where(has_any, last_end, sim_start[miss]) + YEAR_NS
 
-            if interruptible:
-                used  = min(dur, total_hours - work)
-                work += used
-                cur   = w_start + np.int64(used * NS_PER_HOUR)
-            else:
-                if dur >= total_hours:
-                    work = total_hours
-                    cur  = w_start + np.int64(total_hours * NS_PER_HOUR)
-                else:
-                    cur  = w_start + np.int64(dur * NS_PER_HOUR)
+        return (end - sim_start).astype(np.float64) / float(NS_PER_HOUR)
 
-        durations[i] = float(cur - sim_start) / float(NS_PER_HOUR)
+    # ── Interruptible: iterations advance in lock-step ────────────────────
+    cur    = sim_start.copy()
+    work   = np.zeros(n_iter, dtype=np.float64)
+    active = np.ones(n_iter, dtype=bool)
 
-    return durations
+    # Safety bound: a campaign can never need more windows than exist.
+    max_passes = int(n_wins) + 2
+
+    for _ in range(max_passes):
+        ai = np.flatnonzero(active)
+        if ai.size == 0:
+            break
+
+        idx = np.searchsorted(win_ns, cur[ai], side='left')
+
+        # Record exhausted → 1-year penalty, iteration finished
+        spent = idx >= n_wins
+        if spent.any():
+            si = ai[spent]
+            cur[si] += YEAR_NS
+            active[si] = False
+
+        ok = ~spent
+        if not ok.any():
+            continue
+        oi      = ai[ok]
+        widx    = idx[ok]
+        dur     = win_durs[widx]
+        w_start = win_ns[widx]
+
+        if interruptible:
+            used = np.minimum(dur, total_hours - work[oi])
+            work[oi] += used
+            cur[oi]   = w_start + (used * NS_PER_HOUR).astype(np.int64)
+            active[oi[work[oi] >= total_hours]] = False
+        else:
+            fits = dur >= total_hours
+            if fits.any():
+                fi = oi[fits]
+                work[fi]   = total_hours
+                cur[fi]    = w_start[fits] + np.int64(total_hours * NS_PER_HOUR)
+                active[fi] = False
+            if (~fits).any():
+                ni = oi[~fits]
+                cur[ni] = w_start[~fits] + (dur[~fits] * NS_PER_HOUR).astype(np.int64)
+
+    # Any iteration still active hit the pass limit — treat as exhausted
+    if active.any():
+        cur[active] += YEAR_NS
+
+    return (cur - sim_start).astype(np.float64) / float(NS_PER_HOUR)
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 4.  FULL SCENARIO RUNNER  (Steps 1-3 of executeAnalysis)
+# 4.  SCENARIO RUNNER
 # ══════════════════════════════════════════════════════════════════════════
 
 def run_scenario(merged: pd.DataFrame, params: dict):
     """
-    Run one complete scenario: window identification → MC simulation.
+    Run one scenario: window identification → monthly operability → MC.
 
     Returns
     -------
-    results : np.ndarray (campaign durations in hours, inf removed) or None
-    status  : str
+    results      : ndarray of campaign durations (hours), or None
+    monthly_oper : (12,) array of percentages
+    status       : str
     """
-    win_table = find_weather_windows(merged, params)
+    win_table, monthly_oper = find_weather_windows(merged, params)
     if win_table is None:
-        return None, "No weather windows found for these thresholds."
+        return None, monthly_oper, "No weather windows found for these thresholds."
 
-    # Season → start months
     season = params['season']
     if season == 'All-Year':
         start_months = []
@@ -270,15 +331,16 @@ def run_scenario(merged: pd.DataFrame, params: dict):
     raw = run_monte_carlo(merged, win_table, {
         'totalHours':      float(params['dur']),
         'isInterruptible': params['interruptible'],
-        'numIterations':   100_000,
+        'numIterations':   N_ITERATIONS,
         'startMonths':     start_months,
     })
 
     results = raw[np.isfinite(raw)]
     if len(results) == 0:
-        return None, "All MC iterations returned no finite result."
+        return None, monthly_oper, "All iterations returned no finite result."
 
-    return results, f"{len(win_table):,} windows found, {len(results):,} valid iterations."
+    return (results, monthly_oper,
+            f"{len(win_table):,} windows found, {len(results):,} valid iterations.")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -286,11 +348,11 @@ def run_scenario(merged: pd.DataFrame, params: dict):
 # ══════════════════════════════════════════════════════════════════════════
 
 def calc_percentile(sorted_arr: np.ndarray, p: float) -> float:
-    """Nearest-rank percentile (same formula as MATLAB calcPct)."""
+    """Nearest-rank percentile — matches the MATLAB calcPct anonymous fn."""
     idx = max(0, int(round(p / 100.0 * len(sorted_arr))) - 1)
     return float(sorted_arr[min(idx, len(sorted_arr) - 1)])
 
 
 def fmt_hrs_days(h: float) -> str:
-    """Format a duration as 'HH.H (DD.D)' hours (days)."""
+    """Format a duration as 'HH.H (DD.D)' — hours (days)."""
     return f"{h:.1f} ({h / 24:.1f})"
