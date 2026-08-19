@@ -90,72 +90,110 @@ def load_and_merge(hydro_bytes: bytes, wave_bytes: bytes, wind_bytes: bytes) -> 
 # 2.  OPERABILITY ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════
 
-def find_weather_windows(merged: pd.DataFrame, params: dict):
+# Scenario constraint key -> canonical column it tests
+CONSTRAINT_COLS = {
+    "hs":   "Hs",
+    "tp":   "Tp",
+    "wind": "WSpd",
+    "curr": "CSpd",
+    "wdir": "WDir",       # directional sector
+    "vdir": "WaveDir",    # directional sector
+}
+
+
+def find_weather_windows(merged: pd.DataFrame, params: dict,
+                         contiguity_check: bool = False):
     """
     Identify contiguous feasible windows from the FULL unfiltered hindcast,
     and compute window-filtered monthly operability.
 
-    Returns
-    -------
-    win_table    : DataFrame['StartTime','Duration']  (None if no windows)
-    monthly_oper : (12,) array of percentages, NaN where no data
+    Constraints are now variable-length: only the limits present in
+    params['limits'] (and enabled) are applied, so a dataset without current
+    data simply has no current constraint. An hour with NaN in any active
+    constraint is infeasible automatically, because every NaN comparison
+    evaluates False -- this is the 'non-operable' gap policy.
 
-    Monthly operability counts only hours falling INSIDE a retained window
-    (one that satisfies Min Window). Isolated feasible hours in unusably
-    short gaps are excluded, so the figure is consistent with the campaign
-    statistics rather than contradicting them.
+    contiguity_check: set True when the 'exclude' gap policy has removed
+    rows. Windows are then broken wherever consecutive retained hours are
+    more than one hour apart, preventing hours that are months apart in real
+    time from merging into a single phantom window.
+
+    Returns (win_table, monthly_oper, applied) where `applied` lists the
+    constraints actually used, for reporting.
     """
-    hs = merged['Hs'].values
-    tp = merged['Tp'].values if 'Tp' in merged.columns else np.zeros(len(merged))
-    wd = merged['WSpd10'].values
-    cu = merged['CSpd'].values
-
-    feasible = ((hs <= params['hs']) & (tp <= params['tp']) &
-                (wd <= params['wind']) & (cu <= params['curr']))
-
-    # Directional sectors — wrap-through-north safe
-    if params['wdir_active'] and 'WDir10' in merged.columns:
-        v = merged['WDir10'].values
-        lo, hi = params['wdir_min'], params['wdir_max']
-        feasible &= ((v >= lo) & (v <= hi)) if lo <= hi else ((v >= lo) | (v <= hi))
-
-    if params['vdir_active'] and 'WaveDir' in merged.columns:
-        v = merged['WaveDir'].values
-        lo, hi = params['vdir_min'], params['vdir_max']
-        feasible &= ((v >= lo) & (v <= hi)) if lo <= hi else ((v >= lo) | (v <= hi))
-
-    # Contiguous runs of feasible hours
-    pad    = np.concatenate([[0], feasible.astype(np.int8), [0]])
-    diff   = np.diff(pad)
-    starts = np.where(diff == 1)[0]
-    ends   = np.where(diff == -1)[0]
-    durs   = (ends - starts).astype(np.float64)
-
-    keep = durs >= params['min_win']
-
-    # ── Window-filtered monthly operability ───────────────────────────────
     n = len(merged)
+    if n == 0:
+        return None, np.full(12, np.nan), []
+
+    feasible = np.ones(n, dtype=bool)
+    applied = []
+
+    # Threshold limits
+    for key, limit in (params.get("limits") or {}).items():
+        col = CONSTRAINT_COLS.get(key)
+        if col is None or col not in merged.columns or limit is None:
+            continue
+        vals = merged[col].to_numpy(dtype=float)
+        feasible &= (vals <= float(limit))     # NaN <= x is False
+        applied.append(f"{col} <= {limit:g}")
+
+    # Directional sectors (wrap-through-north safe)
+    for key, sector in (params.get("sectors") or {}).items():
+        col = CONSTRAINT_COLS.get(key)
+        if col is None or col not in merged.columns or not sector:
+            continue
+        lo, hi = float(sector[0]), float(sector[1])
+        v = merged[col].to_numpy(dtype=float)
+        inside = ((v >= lo) & (v <= hi)) if lo <= hi else ((v >= lo) | (v <= hi))
+        feasible &= inside & ~np.isnan(v)
+        applied.append(f"{col} in [{lo:g}, {hi:g}]")
+
+    # ---- Run-length encoding, optionally split on time discontinuities ----
+    idx = merged.index
+    boundary = np.zeros(n, dtype=bool)
+    boundary[0] = True
+    if contiguity_check and n > 1:
+        step_h = (np.diff(idx.values).astype("timedelta64[s]")
+                  .astype(np.int64) / 3600.0)
+        boundary[1:] |= step_h > 1.0 + 1e-9
+
+    seg = np.cumsum(boundary)
+    change = np.empty(n, dtype=bool)
+    change[0] = True
+    change[1:] = (feasible[1:] != feasible[:-1]) | (seg[1:] != seg[:-1])
+
+    run_start = np.flatnonzero(change)
+    run_end = np.append(run_start[1:], n)
+    is_feas = feasible[run_start]
+
+    starts = run_start[is_feas]
+    ends = run_end[is_feas]
+    durs = (ends - starts).astype(np.float64)
+
+    keep = durs >= float(params.get("min_win", 1))
+
+    # ---- Window-filtered monthly operability ----
     marks = np.zeros(n + 1, dtype=np.int32)
     if np.any(keep):
         np.add.at(marks, starts[keep], 1)
-        np.add.at(marks, ends[keep],  -1)
+        np.add.at(marks, ends[keep], -1)
     usable = np.cumsum(marks[:-1]) > 0
 
-    months = merged.index.month.values
+    months = idx.month.values
     monthly_oper = np.full(12, np.nan)
     for m in range(1, 13):
-        in_m = (months == m)
+        in_m = months == m
         if in_m.any():
             monthly_oper[m - 1] = 100.0 * usable[in_m].sum() / in_m.sum()
 
     if not np.any(keep):
-        return None, monthly_oper
+        return None, monthly_oper, applied
 
     win_table = pd.DataFrame({
-        'StartTime': merged.index[starts[keep]],
-        'Duration':  durs[keep],
+        "StartTime": idx[starts[keep]],
+        "Duration": durs[keep],
     })
-    return win_table, monthly_oper
+    return win_table, monthly_oper, applied
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -304,7 +342,8 @@ def run_monte_carlo(merged: pd.DataFrame,
 # 4.  SCENARIO RUNNER
 # ══════════════════════════════════════════════════════════════════════════
 
-def run_scenario(merged: pd.DataFrame, params: dict):
+def run_scenario(merged: pd.DataFrame, params: dict,
+                 contiguity_check: bool = False):
     """
     Run one scenario: window identification → monthly operability → MC.
 
@@ -313,10 +352,14 @@ def run_scenario(merged: pd.DataFrame, params: dict):
     results      : ndarray of campaign durations (hours), or None
     monthly_oper : (12,) array of percentages
     status       : str
+    applied      : list of constraint descriptions actually used
     """
-    win_table, monthly_oper = find_weather_windows(merged, params)
+    win_table, monthly_oper, applied = find_weather_windows(
+        merged, params, contiguity_check=contiguity_check)
+
     if win_table is None:
-        return None, monthly_oper, "No weather windows found for these thresholds."
+        return (None, monthly_oper,
+                "No weather windows found for these thresholds.", applied)
 
     season = params['season']
     if season == 'All-Year':
@@ -337,10 +380,12 @@ def run_scenario(merged: pd.DataFrame, params: dict):
 
     results = raw[np.isfinite(raw)]
     if len(results) == 0:
-        return None, monthly_oper, "All iterations returned no finite result."
+        return (None, monthly_oper,
+                "All iterations returned no finite result.", applied)
 
     return (results, monthly_oper,
-            f"{len(win_table):,} windows found, {len(results):,} valid iterations.")
+            f"{len(win_table):,} windows found, {len(results):,} valid iterations.",
+            applied)
 
 
 # ══════════════════════════════════════════════════════════════════════════

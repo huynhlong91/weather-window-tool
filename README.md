@@ -13,43 +13,59 @@ The tool supports simultaneous analysis of up to three operational scenarios, en
 
 ## Input Data Requirements
 
-The tool requires three hindcast CSV files covering the same time period. All files must include a date/time column whose name contains the word **Time** or **Timestamp** (e.g. `DateTime`, `TimeStamp`).
+The tool accepts **any mix of file formats**, as one file or several:
 
-### Hydrodynamics (20-minute resolution)
+| Format | Extensions |
+|---|---|
+| Delimited text | `.csv` `.txt` `.asc` `.dat` `.tsv` |
+| Excel | `.xlsx` `.xls` |
+| netCDF timeseries | `.nc` |
 
-| Column | Description | Units |
+Text files may use commas, semicolons, tabs or whitespace as separators, and may carry comment lines or preamble before the header row — these are detected automatically.
+
+### Time information
+
+Any one of the following is recognised:
+
+- a single date/time column (a column whose name contains *time*, *date* or *timestamp*)
+- separate `Year` / `Month` / `Day` / `Hour` columns
+- Excel serial date numbers
+
+Timestamps are used **exactly as written in the file**. No timezone conversion is applied.
+
+Records finer than hourly are aggregated to hourly; records coarser than hourly (3-hourly, 6-hourly) are interpolated up to hourly, with the interpolation confined to short gaps so genuine holes in the record are preserved.
+
+### Variables
+
+Variables are identified automatically from column names, and — for netCDF — from `standard_name` and `long_name` attributes. Recognised naming conventions include ERA5 short names (`swh`, `pp1d`, `mwd`, `u10`, `v10`), CF standard names, and common hindcast exports.
+
+| Canonical variable | Description | Used for |
 |---|---|---|
-| DateTime | Date and time of record | — |
-| CSpd | Current speed | m/s |
-| CDir | Current direction (from) | degrees |
+| `Hs` | Significant wave height | Wave height limit |
+| `Tp` | Peak wave period | Wave period limit |
+| `WSpd` | Wind speed | Wind limit |
+| `CSpd` | Current speed | Current limit |
+| `WDir` | Wind direction | Wind sector filter |
+| `WaveDir` | Wave direction | Wave sector filter |
+| `Tz`, `Tm`, `Hmax`, `CDir` | Additional parameters | Reported only |
 
-### Waves (hourly resolution)
+**Not every variable is required.** The scenario matrix offers only the constraints your dataset actually supports — a dataset with waves and wind but no current simply has no current limit.
 
-| Column | Description | Units |
-|---|---|---|
-| DateTime | Date and time of record | — |
-| Hs | Significant wave height | m |
-| Tp | Peak wave period | s |
-| Tz | Zero-crossing wave period *(optional)* | s |
-| WaveDir | Mean wave direction *(optional)* | degrees |
+**Vector components are handled.** Where speed and direction are absent but `u`/`v` components are present, speed and direction are derived. Wind and wave directions use the *coming-from* convention; current direction uses *going-to*.
 
-### Winds (hourly resolution)
+**Units are checked.** Declared units are read where available and converted as needed (knots, cm/s, feet, radians). Where units are not declared they are inferred from the value range and flagged for confirmation.
 
-| Column | Description | Units |
-|---|---|---|
-| DateTime | Date and time of record | — |
-| WSpd10 | Wind speed at 10m | m/s |
-| WDir10 | Wind direction (from) at 10m *(optional)* | degrees |
-
-> **Note:** The hindcast record should ideally cover a minimum of 10 years to produce statistically robust results. A record of 20–40 years is recommended.
-
----
+**The proposed mapping is always shown for you to confirm or override before analysis**, because a mis-identified column produces results that look plausible and are wrong.
 
 ## Using the Tool
 
-### Step 1 — Load Hindcast Data
+### Step 1 — Load data (Data tab)
 
-Upload the three CSV files using the file uploaders at the top of the page. The tool will automatically detect the datetime column, aggregate hydrodynamics to hourly resolution (retaining the peak current speed within each hour), and merge all three datasets on their common timestamps.
+Upload your files. For each one the tool reports how the time axis was read, the record length and native resolution, and any warnings.
+
+You are then shown the **proposed variable mapping** — which column became which variable, the units detected, any conversion applied, and how confident the match was. Check this and adjust anything that looks wrong before continuing.
+
+Finally the **data inventory** summarises the merged dataset: record length and completeness, per-variable coverage and value ranges, any gaps longer than one hour, and how many years of data exist for each calendar month.
 
 ### Step 2 — Configure Scenarios
 
@@ -70,6 +86,15 @@ Up to three scenarios can be configured simultaneously in the Scenario Parameter
 | **Wind Sector (Min / Max °)** | Inclusive directional sector for wind. Sectors wrapping through North are supported (set Min > Max, e.g. 330° to 030°) |
 | **Limit Wave Dir?** | Enables a wave direction operability sector |
 | **Wave Sector (Min / Max °)** | Inclusive directional sector for waves |
+
+Each threshold also has an on/off toggle, so a constraint present in the data can be excluded from a given scenario without editing files.
+
+#### Missing data policy
+
+Where an active constraint has gaps, choose how those hours are treated:
+
+- **Treat as non-operable** *(default)* — the hours are kept and counted as unworkable. Conservative, and keeps the time axis continuous.
+- **Exclude from the record** — the hours are removed and do not count in the operability denominator. Fairer when a variable is patchy. Window identification then enforces timestamp contiguity, so hours far apart in real time cannot merge into a single window.
 
 ### Step 3 — Run the Analysis
 
@@ -156,6 +181,17 @@ Percentiles are derived from the resulting distribution of simulated durations u
 ---
 
 ## Version History
+
+### v1.2 — August 2026
+
+- **Universal data loading.** Accepts `.csv`, `.txt`, `.asc`, `.dat`, `.tsv`, `.xlsx`, `.xls` and `.nc`, as one file or several. Delimiters, comment lines and preamble rows are detected automatically.
+- **Automatic variable identification**, with the proposed mapping always shown for confirmation. Covers ERA5 short names, CF standard names and common hindcast exports.
+- **Vector component derivation.** Wind and current speed and direction are derived from `u`/`v` components where speed and direction are not supplied directly.
+- **Unit detection and conversion** for knots, cm/s, feet and radians, with inferred units flagged for confirmation.
+- **Flexible time handling.** Single datetime column, split year/month/day/hour columns, or Excel serial numbers. Sub-hourly data is aggregated; coarser data is interpolated up to hourly without bridging genuine gaps.
+- **Data inventory** reporting record length, completeness, per-variable coverage, gaps longer than one hour, and years sampled per calendar month.
+- **Adaptive scenario matrix.** Only constraints supported by the dataset are offered, each with an on/off toggle.
+- **Missing data policy**, selectable between treating gaps as non-operable or excluding them from the record.
 
 ### v1.1 — August 2026
 
