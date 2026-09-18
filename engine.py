@@ -204,20 +204,22 @@ def run_monte_carlo(merged: pd.DataFrame,
                     win_table: pd.DataFrame,
                     settings: dict) -> np.ndarray:
     """
-    Monte Carlo campaign-duration estimator — vectorised port of
-    runMonteCarlo.m.
+    Monte Carlo campaign-duration estimator.
 
-    Rather than looping over iterations one at a time, all iterations
-    advance in lock-step: each pass of the outer loop resolves "find the
-    next window" for every still-active iteration simultaneously via a
-    vectorised np.searchsorted. The outer loop runs only as many times as
-    the longest campaign needs windows (typically tens), so 1,000,000
-    iterations complete in about a second instead of ~30.
+    A campaign start drawn at random frequently lands INSIDE an existing
+    weather window. When it does, work begins immediately using whatever
+    remains of that window -- the vessel is on site and conditions are
+    workable, so there is nothing to wait for.
+
+    (Searching only for the next window that *starts* at or after the
+    current time skips the window you are already in and adds a wait that
+    does not exist. The error grows with operability: on a 93%-operable
+    record almost every start falls inside a long window, which inflates
+    durations enough to make a looser limit look worse than a stricter one.)
 
     Season/Month logic is unchanged: startMonths restricts ONLY which hours
     are eligible as campaign starts. Once started, a campaign searches the
-    full window table freely forward in continuous time, so a March start
-    correctly uses April/May/June windows.
+    full window table freely forward in continuous time.
     """
     total_hours   = float(settings['totalHours'])
     interruptible = bool(settings['isInterruptible'])
@@ -227,7 +229,6 @@ def run_monte_carlo(merged: pd.DataFrame,
     if win_table is None or len(win_table) == 0:
         return np.full(n_iter, np.inf)
 
-    # Eligible start-time pool
     row_times  = merged.index
     limit_idx  = max(1, len(row_times) - int(total_hours * 5))
     candidates = row_times[:limit_idx]
@@ -248,90 +249,96 @@ def run_monte_carlo(merged: pd.DataFrame,
         win_ns   = win_ns[order]
         win_durs = win_durs[order]
 
-    n_wins = len(win_ns)
-    rng    = np.random.default_rng()
+    win_end = win_ns + (win_durs * NS_PER_HOUR).astype(np.int64)
+    n_wins  = len(win_ns)
+    rng     = np.random.default_rng()
 
     sim_start = cand_ns[rng.integers(len(cand_ns), size=n_iter)]
 
-    # ── Fast path: non-interruptible ──────────────────────────────────────
-    # The campaign needs ONE unbroken window of at least total_hours. Walking
-    # window-by-window is unnecessary: because windows are non-overlapping and
-    # sorted, skipping a too-short window always lands on the next window in
-    # index order. The net result is simply "the first window at or after the
-    # start that is long enough". Pre-filtering to qualifying windows turns the
-    # whole simulation into a single vectorised searchsorted.
+    def _availability(cur):
+        """
+        For each position, the window that can be worked from `cur`.
+
+        Returns (start_eff, avail_hours, found):
+          start_eff   - when work can begin (cur itself if already inside a
+                        window, otherwise the next window's start)
+          avail_hours - workable hours from start_eff to that window's end
+          found       - False when no window remains ahead
+        """
+        j = np.searchsorted(win_ns, cur, side="right") - 1
+        jc = np.clip(j, 0, n_wins - 1)
+        inside = (j >= 0) & (cur < win_end[jc])
+
+        k = np.searchsorted(win_ns, cur, side="left")
+        kc = np.clip(k, 0, n_wins - 1)
+        ahead = k < n_wins
+
+        found = inside | ahead
+        start_eff = np.where(inside, cur, win_ns[kc])
+        end_eff = np.where(inside, win_end[jc], win_end[kc])
+        avail = (end_eff - start_eff).astype(np.float64) / float(NS_PER_HOUR)
+        return start_eff, avail, found
+
+    # ---- Non-interruptible -------------------------------------------
     if not interruptible:
-        end  = np.empty(n_iter, dtype=np.int64)
+        end = np.empty(n_iter, dtype=np.int64)
+
+        # Already inside a window with enough left to finish the job
+        j = np.searchsorted(win_ns, sim_start, side="right") - 1
+        jc = np.clip(j, 0, n_wins - 1)
+        inside = (j >= 0) & (sim_start < win_end[jc])
+        remaining = (win_end[jc] - sim_start).astype(np.float64) / float(NS_PER_HOUR)
+        now_ok = inside & (remaining >= total_hours)
+        end[now_ok] = sim_start[now_ok] + np.int64(total_hours * NS_PER_HOUR)
+
+        rest = ~now_ok
         qual = win_durs >= total_hours
-
-        if qual.any():
+        hit = np.zeros(n_iter, dtype=bool)
+        if qual.any() and rest.any():
             qual_ns = win_ns[qual]
-            j   = np.searchsorted(qual_ns, sim_start, side='left')
-            hit = j < len(qual_ns)
-            end[hit] = qual_ns[j[hit]] + np.int64(total_hours * NS_PER_HOUR)
-        else:
-            hit = np.zeros(n_iter, dtype=bool)
+            k = np.searchsorted(qual_ns, sim_start[rest], side="left")
+            got = k < len(qual_ns)
+            ri = np.flatnonzero(rest)
+            end[ri[got]] = (qual_ns[k[got]]
+                            + np.int64(total_hours * NS_PER_HOUR))
+            hit[ri[got]] = True
 
-        # No long-enough window ahead. The scalar algorithm skips through every
-        # remaining window (each skip advances to that window's end) until the
-        # table is exhausted, then applies the 1-year penalty. Reproduce that
-        # endpoint directly: the end of the final window, plus one year — or,
-        # if no window at all lies ahead of the start, the start plus one year.
-        if (~hit).any():
-            miss     = ~hit
-            last_end = win_ns[-1] + np.int64(win_durs[-1] * NS_PER_HOUR)
-            has_any  = np.searchsorted(win_ns, sim_start[miss], side='left') < n_wins
+        miss = rest & ~hit
+        if miss.any():
+            last_end = win_end[-1]
+            has_any = np.searchsorted(win_ns, sim_start[miss],
+                                      side="left") < n_wins
             end[miss] = np.where(has_any, last_end, sim_start[miss]) + YEAR_NS
 
         return (end - sim_start).astype(np.float64) / float(NS_PER_HOUR)
 
-    # ── Interruptible: iterations advance in lock-step ────────────────────
+    # ---- Interruptible: all iterations advance in lock-step -----------
     cur    = sim_start.copy()
     work   = np.zeros(n_iter, dtype=np.float64)
     active = np.ones(n_iter, dtype=bool)
 
-    # Safety bound: a campaign can never need more windows than exist.
-    max_passes = int(n_wins) + 2
-
-    for _ in range(max_passes):
+    for _ in range(int(n_wins) + 2):
         ai = np.flatnonzero(active)
         if ai.size == 0:
             break
 
-        idx = np.searchsorted(win_ns, cur[ai], side='left')
+        start_eff, avail, found = _availability(cur[ai])
 
-        # Record exhausted → 1-year penalty, iteration finished
-        spent = idx >= n_wins
+        spent = ~found
         if spent.any():
             si = ai[spent]
             cur[si] += YEAR_NS
             active[si] = False
 
-        ok = ~spent
+        ok = found
         if not ok.any():
             continue
-        oi      = ai[ok]
-        widx    = idx[ok]
-        dur     = win_durs[widx]
-        w_start = win_ns[widx]
+        oi = ai[ok]
+        used = np.minimum(avail[ok], total_hours - work[oi])
+        work[oi] += used
+        cur[oi] = start_eff[ok] + (used * NS_PER_HOUR).astype(np.int64)
+        active[oi[work[oi] >= total_hours]] = False
 
-        if interruptible:
-            used = np.minimum(dur, total_hours - work[oi])
-            work[oi] += used
-            cur[oi]   = w_start + (used * NS_PER_HOUR).astype(np.int64)
-            active[oi[work[oi] >= total_hours]] = False
-        else:
-            fits = dur >= total_hours
-            if fits.any():
-                fi = oi[fits]
-                work[fi]   = total_hours
-                cur[fi]    = w_start[fits] + np.int64(total_hours * NS_PER_HOUR)
-                active[fi] = False
-            if (~fits).any():
-                ni = oi[~fits]
-                cur[ni] = w_start[~fits] + (dur[~fits] * NS_PER_HOUR).astype(np.int64)
-
-    # Any iteration still active hit the pass limit — treat as exhausted
     if active.any():
         cur[active] += YEAR_NS
 
