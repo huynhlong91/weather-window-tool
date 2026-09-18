@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-N_ITERATIONS = 100_000
+N_ITERATIONS = 500_000
 
 MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -305,10 +305,16 @@ def run_monte_carlo(merged: pd.DataFrame,
 
         miss = rest & ~hit
         if miss.any():
+            # Exhaustion penalty. The scalar algorithm walks forward through
+            # whatever windows it can reach, so the penalty is applied from
+            # the end of the last window it touched. A start that reached no
+            # window at all (past the end of the record) is penalised from
+            # the start time itself.
             last_end = win_end[-1]
             has_any = np.searchsorted(win_ns, sim_start[miss],
                                       side="left") < n_wins
-            end[miss] = np.where(has_any, last_end, sim_start[miss]) + YEAR_NS
+            reached = has_any | inside[miss]
+            end[miss] = np.where(reached, last_end, sim_start[miss]) + YEAR_NS
 
         return (end - sim_start).astype(np.float64) / float(NS_PER_HOUR)
 
