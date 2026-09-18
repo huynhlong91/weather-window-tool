@@ -157,7 +157,7 @@ Contiguous sequences of feasible hours are identified as weather windows. Window
 
 ### 3. Monte Carlo Simulation
 
-For each of the 100,000 iterations:
+For each of the 500,000 iterations:
 
 1. A campaign start time is drawn at random from the hindcast. If a season or month is specified, only start times within that period are eligible; the simulation then searches forward through the full window table with no seasonal boundary.
 
