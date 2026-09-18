@@ -46,6 +46,52 @@ LIMIT_ROWS = [
 SECTOR_ROWS = [("wdir", "Wind Sector", "Limit Wind Dir?"),
                ("vdir", "Wave Sector", "Limit Wave Dir?")]
 
+
+# ══════════════════════════════════════════════════════════════════════════
+# Cached pipeline
+#
+# Streamlit re-runs this entire script on every widget interaction. Without
+# caching, changing one number in the scenario matrix would re-read every
+# uploaded file and rebuild the whole dataset — slow, and with a large
+# netCDF heavy enough to exhaust memory. These wrappers make a rerun a
+# cache lookup instead.
+# ══════════════════════════════════════════════════════════════════════════
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def cached_read(name: str, data: bytes):
+    """Read and time-resolve one file. Keyed on filename + file content."""
+    raw = read_any(name, data)
+    frame, tinfo = resolve_time_axis(raw)
+    return frame, raw.var_attrs, raw.notes, raw.warnings, describe_time(tinfo), tinfo
+
+
+def _frame_sig(name, frame):
+    """Cheap, collision-resistant signature of a loaded frame."""
+    return (name, len(frame), str(frame.index[0]), str(frame.index[-1]),
+            tuple(str(c) for c in frame.columns))
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def cached_build(_sources, _prop, sig, mapping_sig):
+    """
+    Map -> derive -> hourly -> merge -> inventory.
+
+    Leading-underscore arguments are not hashed by Streamlit; `sig` and
+    `mapping_sig` are the real cache key, so this recomputes only when the
+    files or the confirmed mapping actually change.
+    """
+    mapped, derive_notes = apply_mapping(_sources, _prop)
+    hourly, infos = [], []
+    for nm, fr in mapped:
+        h, ri = to_hourly(nm, fr)
+        hourly.append((nm, h))
+        infos.append(ri)
+    merged, merge_notes = merge_sources(hourly)
+    active = [c for c in merged.columns
+              if CANONICAL.get(c) and CANONICAL[c].constraint]
+    inv = build_inventory(merged, _prop.rows, active_cols=active)
+    return merged, inv, infos, derive_notes, merge_notes
+
 st.markdown("""
 <style>
   .row-label { font-weight:600; font-size:0.9em; padding-top:6px; }
@@ -155,20 +201,19 @@ with tab_data:
         st.session_state.pop("dataset", None)
     else:
         sources = []
-        with st.spinner("Reading files…"):
-            for f in files:
-                try:
-                    raw = read_any(f.name, f.getvalue())
-                    frame, tinfo = resolve_time_axis(raw)
-                    sources.append((f.name, frame, raw.var_attrs))
-                    with st.expander(f"✅  {f.name}  —  {describe_time(tinfo)}"):
-                        for n in raw.notes + tinfo.notes:
-                            st.caption(f"• {n}")
-                        for w in raw.warnings + tinfo.warnings:
-                            st.warning(w)
-                        st.dataframe(frame.head(5), use_container_width=True)
-                except Exception as exc:
-                    st.error(f"**{f.name}** — {exc}")
+        for f in files:
+            try:
+                frame, attrs, notes, warns, tdesc, tinfo = cached_read(
+                    f.name, f.getvalue())
+                sources.append((f.name, frame, attrs))
+                with st.expander(f"✅  {f.name}  —  {tdesc}"):
+                    for n in notes + tinfo.notes:
+                        st.caption(f"• {n}")
+                    for w in warns + tinfo.warnings:
+                        st.warning(w)
+                    st.dataframe(frame.head(5), use_container_width=True)
+            except Exception as exc:
+                st.error(f"**{f.name}** — {exc}")
 
         if sources:
             st.divider()
@@ -253,18 +298,13 @@ with tab_data:
                 st.divider()
                 st.subheader("③ Data inventory")
 
-                with st.spinner("Normalising to hourly and merging…"):
-                    mapped, derive_notes = apply_mapping(sources, prop)
-                    hourly, infos = [], []
-                    for name, frame in mapped:
-                        h, ri = to_hourly(name, frame)
-                        hourly.append((name, h))
-                        infos.append(ri)
-                    merged, merge_notes = merge_sources(hourly)
+                sig = tuple(_frame_sig(n, f) for n, f, _ in sources)
+                mapping_sig = tuple(sorted(
+                    (r.canonical, r.source_file, r.source_col) for r in prop.rows))
 
-                active_default = [c for c in merged.columns
-                                  if CANONICAL.get(c) and CANONICAL[c].constraint]
-                inv = build_inventory(merged, prop.rows, active_cols=active_default)
+                with st.spinner("Normalising to hourly and merging…"):
+                    merged, inv, infos, derive_notes, merge_notes = cached_build(
+                        sources, prop, sig, mapping_sig)
 
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Record length", f"{inv.years:.1f} yrs")
@@ -332,108 +372,124 @@ with tab_analysis:
                     "constraints: " + ", ".join(missing))
 
         st.subheader("① Scenario parameters")
+        st.caption(
+            "Values are applied when you press Run — the page no longer "
+            "reloads while you type."
+        )
 
-        hdr = st.columns([1.7, 1, 1, 1])
-        for i in range(3):
-            hdr[i + 1].markdown(
-                f"<div class='sc-header' style='border-color:{COLORS[i]};"
-                f"color:{COLORS[i]}'>Scenario {i+1}</div>", unsafe_allow_html=True)
+        with st.form("scenario_form"):
 
-        def row(label, help_txt=None):
-            c = st.columns([1.7, 1, 1, 1])
-            c[0].markdown(f"<div class='row-label'>{label}</div>",
-                          unsafe_allow_html=True, help=help_txt)
-            return c
-
-        limit_vals, limit_on = {}, {}
-        for key, label, dflt, lo, hi, step, helptxt in avail_limits:
-            c = row(label, helptxt)
-            limit_vals[key], limit_on[key] = [], []
+            hdr = st.columns([1.7, 1, 1, 1])
             for i in range(3):
-                sub = c[i + 1].columns([1, 2.2])
-                on = sub[0].checkbox("", value=True, key=f"on_{key}_{i}",
-                                     label_visibility="collapsed")
-                v = sub[1].number_input("", value=dflt, min_value=lo, max_value=hi,
-                                        step=step, key=f"lim_{key}_{i}",
-                                        disabled=not on, label_visibility="collapsed")
-                limit_on[key].append(on)
-                limit_vals[key].append(v)
+                hdr[i + 1].markdown(
+                    f"<div class='sc-header' style='border-color:{COLORS[i]};"
+                    f"color:{COLORS[i]}'>Scenario {i+1}</div>", unsafe_allow_html=True)
 
-        c = row("Total Work (hrs)", "Total productive work hours required")
-        dur_vals = [c[i + 1].number_input("", value=72.0, min_value=1.0,
-                    max_value=8760.0, step=1.0, key=f"dur_{i}",
-                    label_visibility="collapsed") for i in range(3)]
+            def row(label, help_txt=None):
+                c = st.columns([1.7, 1, 1, 1])
+                c[0].markdown(f"<div class='row-label'>{label}</div>",
+                              unsafe_allow_html=True, help=help_txt)
+                return c
 
-        c = row("Interruptible", "Can the campaign be split across windows?")
-        inter_vals = [c[i + 1].selectbox("", ["Yes", "No"], key=f"int_{i}",
-                      label_visibility="collapsed") for i in range(3)]
+            limit_vals, limit_on = {}, {}
+            for key, label, dflt, lo, hi, step, helptxt in avail_limits:
+                c = row(label, helptxt)
+                limit_vals[key], limit_on[key] = [], []
+                for i in range(3):
+                    sub = c[i + 1].columns([1, 2.2])
+                    on = sub[0].checkbox("", value=True, key=f"on_{key}_{i}",
+                                         label_visibility="collapsed")
+                    v = sub[1].number_input("", value=dflt, min_value=lo, max_value=hi,
+                                            step=step, key=f"lim_{key}_{i}",
+                                            disabled=not on, label_visibility="collapsed")
+                    limit_on[key].append(on)
+                    limit_vals[key].append(v)
 
-        c = row("Min Window (hrs)",
-                "Minimum contiguous window duration. Not applicable when the "
-                "campaign is non-interruptible.")
-        minwin_vals = []
-        for i in range(3):
-            if inter_vals[i] == "No":
-                c[i + 1].number_input("", value=float(dur_vals[i]), disabled=True,
-                                      key=f"mwlock_{i}", label_visibility="collapsed",
-                                      help="Locked to Total Work: a non-interruptible "
-                                           "campaign needs one unbroken window of at "
-                                           "least this length.")
-                minwin_vals.append(float(dur_vals[i]))
-            else:
-                minwin_vals.append(c[i + 1].number_input(
-                    "", value=6.0, min_value=1.0, max_value=720.0, step=1.0,
-                    key=f"mw_{i}", label_visibility="collapsed"))
+            c = row("Total Work (hrs)", "Total productive work hours required")
+            dur_vals = [c[i + 1].number_input("", value=72.0, min_value=1.0,
+                        max_value=8760.0, step=1.0, key=f"dur_{i}",
+                        label_visibility="collapsed") for i in range(3)]
 
-        c = row("Start Season / Month",
-                "Restricts only the campaign START dates. Windows are searched "
-                "forward continuously from each start.")
-        season_vals = [c[i + 1].selectbox("", SEASONS, key=f"sea_{i}",
-                       label_visibility="collapsed") for i in range(3)]
+            c = row("Interruptible", "Can the campaign be split across windows?")
+            inter_vals = [c[i + 1].selectbox("", ["Yes", "No"], key=f"int_{i}",
+                          label_visibility="collapsed") for i in range(3)]
 
-        c = row("Low % / High %", "Percentile bounds for the results table")
-        low_vals, high_vals = [], []
-        for i in range(3):
-            sub = c[i + 1].columns(2)
-            low_vals.append(sub[0].number_input("", value=10, min_value=1,
-                            max_value=49, key=f"lo_{i}", label_visibility="collapsed"))
-            high_vals.append(sub[1].number_input("", value=90, min_value=51,
-                             max_value=99, key=f"hi_{i}", label_visibility="collapsed"))
+            c = row("Min Window (hrs)",
+                    "Minimum contiguous window duration. Not applicable when the "
+                    "campaign is non-interruptible.")
+            minwin_vals = [c[i + 1].number_input(
+                "", value=6.0, min_value=1.0, max_value=720.0, step=1.0,
+                key=f"mw_{i}", label_visibility="collapsed",
+                help="Ignored when Interruptible = No, where Total Work becomes "
+                     "the binding minimum.") for i in range(3)]
 
-        sector_on, sector_min, sector_max = {}, {}, {}
-        for key, label, toggle_label in avail_sectors:
-            c = row(toggle_label)
-            sector_on[key] = [c[i + 1].checkbox("Active", key=f"secon_{key}_{i}")
-                              for i in range(3)]
-            c = row(f"{label} (Min / Max °)")
-            sector_min[key], sector_max[key] = [], []
+            c = row("Start Season / Month",
+                    "Restricts only the campaign START dates. Windows are searched "
+                    "forward continuously from each start.")
+            season_vals = [c[i + 1].selectbox("", SEASONS, key=f"sea_{i}",
+                           label_visibility="collapsed") for i in range(3)]
+
+            c = row("Low % / High %", "Percentile bounds for the results table")
+            low_vals, high_vals = [], []
             for i in range(3):
                 sub = c[i + 1].columns(2)
-                sector_min[key].append(sub[0].number_input(
-                    "", value=0, min_value=0, max_value=360, key=f"smin_{key}_{i}",
-                    disabled=not sector_on[key][i], label_visibility="collapsed"))
-                sector_max[key].append(sub[1].number_input(
-                    "", value=360, min_value=0, max_value=360, key=f"smax_{key}_{i}",
-                    disabled=not sector_on[key][i], label_visibility="collapsed"))
+                low_vals.append(sub[0].number_input("", value=10, min_value=1,
+                                max_value=49, key=f"lo_{i}", label_visibility="collapsed"))
+                high_vals.append(sub[1].number_input("", value=90, min_value=51,
+                                 max_value=99, key=f"hi_{i}", label_visibility="collapsed"))
 
-        st.divider()
-        st.subheader("② Missing data policy")
-        choice = st.radio("How should hours with missing data be treated?",
-                          ["Treat as non-operable", "Exclude from the record"],
-                          horizontal=True,
-                          help="Only matters where an active constraint has gaps.")
-        if choice.startswith("Treat"):
-            policy = "non-operable"
-            st.caption("Hours missing any active variable are kept and counted as "
-                       "unworkable. Conservative, and keeps the time axis continuous.")
-        else:
-            policy = "exclude"
-            st.caption("Those hours are removed entirely and excluded from the "
-                       "operability denominator. Fairer when a variable is patchy. "
-                       "Window building automatically enforces timestamp contiguity "
-                       "so hours far apart in time cannot merge into one window.")
+            sector_on, sector_min, sector_max = {}, {}, {}
+            for key, label, toggle_label in avail_sectors:
+                c = row(toggle_label)
+                sector_on[key] = [c[i + 1].checkbox("Active", key=f"secon_{key}_{i}")
+                                  for i in range(3)]
+                c = row(f"{label} (Min / Max °)")
+                sector_min[key], sector_max[key] = [], []
+                for i in range(3):
+                    sub = c[i + 1].columns(2)
+                    sector_min[key].append(sub[0].number_input(
+                        "", value=0, min_value=0, max_value=360, key=f"smin_{key}_{i}",
+                        disabled=not sector_on[key][i], label_visibility="collapsed"))
+                    sector_max[key].append(sub[1].number_input(
+                        "", value=360, min_value=0, max_value=360, key=f"smax_{key}_{i}",
+                        disabled=not sector_on[key][i], label_visibility="collapsed"))
 
-        st.divider()
+            st.divider()
+            st.subheader("② Missing data policy")
+            choice = st.radio("How should hours with missing data be treated?",
+                              ["Treat as non-operable", "Exclude from the record"],
+                              horizontal=True,
+                              help="Only matters where an active constraint has gaps.")
+            if choice.startswith("Treat"):
+                policy = "non-operable"
+                st.caption("Hours missing any active variable are kept and counted as "
+                           "unworkable. Conservative, and keeps the time axis continuous.")
+            else:
+                policy = "exclude"
+                st.caption("Those hours are removed entirely and excluded from the "
+                           "operability denominator. Fairer when a variable is patchy. "
+                           "Window building automatically enforces timestamp contiguity "
+                           "so hours far apart in time cannot merge into one window.")
+
+            st.divider()
+            submitted = st.form_submit_button(
+                f"▶  RUN COMPARISON  ({N_ITERATIONS:,} iterations per scenario)",
+                type="primary", use_container_width=True)
+
+        # Min Window is ignored when the campaign cannot be split: one unbroken
+        # window of at least Total Work is required, so Total Work is the
+        # binding minimum. Resolve that here rather than as a disabled widget,
+        # which cannot update live inside a form.
+        minwin_eff = [float(dur_vals[i]) if inter_vals[i] == "No" else minwin_vals[i]
+                      for i in range(3)]
+
+        locked = [i + 1 for i in range(3) if inter_vals[i] == "No"]
+        if locked:
+            st.caption(
+                f"Scenario(s) {locked} are non-interruptible, so Min Window is "
+                f"set to Total Work automatically."
+            )
+
         bad = [f"Scenario {i+1}: Min Window ({minwin_vals[i]:g} h) exceeds "
                f"Total Work ({dur_vals[i]:g} h)"
                for i in range(3)
@@ -450,11 +506,7 @@ with tab_analysis:
             st.error(f"Scenario(s) {none_on} have no active limits — every hour "
                      f"would be workable. Enable at least one.")
 
-        run = st.button(
-            f"▶  RUN COMPARISON  ({N_ITERATIONS:,} iterations per scenario)",
-            type="primary", use_container_width=True, disabled=bool(none_on))
-
-        if run:
+        if submitted and not none_on:
             st.session_state.pop("results", None)
             active_cols = sorted({CONSTRAINT_COLS[k] for k in limit_vals
                                   if any(limit_on[k])} & set(merged.columns))
@@ -467,7 +519,7 @@ with tab_analysis:
                 "limits": {k: limit_vals[k][i] for k in limit_vals if limit_on[k][i]},
                 "sectors": {k: (sector_min[k][i], sector_max[k][i])
                             for k in sector_on if sector_on[k][i]},
-                "min_win": minwin_vals[i],
+                "min_win": minwin_eff[i],
                 "dur": dur_vals[i],
                 "interruptible": inter_vals[i] == "Yes",
                 "season": season_vals[i],
