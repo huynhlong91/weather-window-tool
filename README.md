@@ -184,7 +184,7 @@ Percentiles are derived from the resulting distribution of simulated durations u
 
 ### v1.2.1 — September 2026
 
-- **Monte Carlo iterations set to 100,000.** Verified to give percentile estimates within 0.15% of a one-million-iteration run, at a fraction of the runtime.
+- **Monte Carlo iterations set to 500,000.** Verified to give percentile estimates within 0.15% of a one-million-iteration run, at a fraction of the runtime.
 - **Scenario parameters are now applied on Run.** The page no longer reloads while values are being edited.
 - **Data processing is cached**, so changing a scenario setting no longer re-reads the uploaded files or rebuilds the dataset.
 
