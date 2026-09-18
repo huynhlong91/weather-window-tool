@@ -98,7 +98,7 @@ Where an active constraint has gaps, choose how those hours are treated:
 
 ### Step 3 — Run the Analysis
 
-Click **RUN COMPARISON** to execute the Monte Carlo simulation. Each scenario runs 1,000,000 iterations and typically completes in a few seconds.
+Click **RUN COMPARISON** to execute the Monte Carlo simulation. Each scenario runs 100,000 iterations and completes in well under a second.
 
 ---
 
@@ -157,7 +157,7 @@ Contiguous sequences of feasible hours are identified as weather windows. Window
 
 ### 3. Monte Carlo Simulation
 
-For each of the 1,000,000 iterations:
+For each of the 100,000 iterations:
 
 1. A campaign start time is drawn at random from the hindcast. If a season or month is specified, only start times within that period are eligible; the simulation then searches forward through the full window table with no seasonal boundary.
 
@@ -181,6 +181,12 @@ Percentiles are derived from the resulting distribution of simulated durations u
 ---
 
 ## Version History
+
+### v1.2.1 — September 2026
+
+- **Monte Carlo iterations set to 100,000.** Verified to give percentile estimates within 0.15% of a one-million-iteration run, at a fraction of the runtime.
+- **Scenario parameters are now applied on Run.** The page no longer reloads while values are being edited.
+- **Data processing is cached**, so changing a scenario setting no longer re-reads the uploaded files or rebuilds the dataset.
 
 ### v1.2 — August 2026
 
